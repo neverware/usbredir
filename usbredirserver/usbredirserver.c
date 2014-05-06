@@ -34,18 +34,23 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include "usbredirhost.h"
 
 
 #define SERVER_VERSION "usbredirserver " PACKAGE_VERSION
 
+#define STRNCPY(dst,src,n)	{ strncpy(dst,src,n-1); dst[n-1] = 0; }
+
 static int verbose = usbredirparser_info;
 static int client_fd, running = 1;
 static libusb_context *ctx;
 static struct usbredirhost *host;
+char client_address[16];
 
 static const struct option longopts[] = {
+    { "address", required_argument, NULL, 'a' },
     { "port", required_argument, NULL, 'p' },
     { "verbose", required_argument, NULL, 'v' },
     { "help", no_argument, NULL, 'h' },
@@ -92,7 +97,7 @@ static int usbredirserver_write(void *priv, uint8_t *data, int count)
 static void usage(int exit_code, char *argv0)
 {
     fprintf(exit_code? stderr:stdout,
-        "Usage: %s [-p|--port <port>] [-v|--verbose <0-5>] <usbbus-usbaddr|vendorid:prodid>\n",
+        "Usage: %s -a|--address <guest address> [-p|--port <port>] [-v|--verbose <0-5>] <usbbus-usbaddr|vendorid:prodid>\n",
         argv0);
     exit(exit_code);
 }
@@ -196,24 +201,22 @@ int main(int argc, char *argv[])
     int usbaddr    = -1;
     int usbvendor  = -1;
     int usbproduct = -1;
-    struct addrinfo *r, *res, hints;
+    struct sockaddr_in client_saddr;
     struct sigaction act;
-    char port_str[16];
     libusb_device_handle *handle = NULL;
 
-    while ((o = getopt_long(argc, argv, "hp:v:", longopts, NULL)) != -1) {
+    while ((o = getopt_long(argc, argv, "ha:p:v:", longopts, NULL)) != -1) {
         switch (o) {
+        case 'a':
+            STRNCPY(client_address, optarg, sizeof(client_address));
+            break;
         case 'p':
-            port = strtol(optarg, &endptr, 10);
-            if (*endptr != '\0') {
-                fprintf(stderr, "Inalid value for --port: '%s'\n", optarg);
-                usage(1, argv[0]);
-            }
+            port = atoi(optarg);
             break;
         case 'v':
             verbose = strtol(optarg, &endptr, 10);
             if (*endptr != '\0') {
-                fprintf(stderr, "Inalid value for --verbose: '%s'\n", optarg);
+                fprintf(stderr, "Invalid value for --verbose: '%s'\n", optarg);
                 usage(1, argv[0]);
             }
             break;
@@ -271,49 +274,24 @@ int main(int argc, char *argv[])
 
     libusb_set_debug(ctx, verbose);
 
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_flags = AI_ADDRCONFIG | AI_NUMERICSERV | AI_PASSIVE;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-
-    sprintf(port_str, "%d", port);
-    if (getaddrinfo(NULL, port_str, &hints, &res) != 0) {
-        perror("getaddrinfo");
+    client_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (client_fd == -1) {
+        perror("socket");        
         exit(1);
     }
 
-    for (r = res; r != NULL; r = r->ai_next) {
-        server_fd = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if (server_fd == -1)
-            continue;
+    /* Construct the client address structure */
+    memset(&client_saddr, 0, sizeof(client_saddr));             /* Zero out structure */
+    client_saddr.sin_family      = AF_INET;                     /* Internet address family */
+    client_saddr.sin_addr.s_addr = inet_addr(client_address);   /* Instance IP address */
+    client_saddr.sin_port        = htons(port);                 /* Server port */
 
-        if (bind(server_fd, r->ai_addr, r->ai_addrlen) == 0)
-            break;
-
-        close(server_fd);
-    }
-    freeaddrinfo(res);
-
-    if (r == NULL) {
-        fprintf(stderr, "Could not bind to port: %s\n", port_str);
-        exit(1);
-    }
-
-    if (listen(server_fd, 1)) {
-        perror("listen");
+    if (connect(client_fd, (struct sockaddr *) &client_saddr, sizeof(client_saddr)) < 0) {
+        perror("connect");        
         exit(1);
     }
 
     while (running) {
-        client_fd = accept(server_fd, NULL, 0);
-        if (client_fd == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
-            perror("accept");
-            break;
-        }
 
         fcntl(client_fd, F_SETFL,
               (long)fcntl(client_fd, F_GETFL) | O_NONBLOCK);
