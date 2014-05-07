@@ -5,7 +5,7 @@ sudo apt-get install autoconf libtool
 
 PREFIX=/opt/neverware_usbredir
 if [ ! -d $PREFIX ]; then
-    mkdir -p $PREFIX
+    sudo mkdir -p $PREFIX
 fi
 ./autogen.sh --prefix=$PREFIX
 make
