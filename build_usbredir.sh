@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Script designed to be run on a juiceclient that can quickly build
+# usbredir and drop it in $PREFIX.
+
 # Grab dependencies
 sudo apt-get install autoconf libtool
 
